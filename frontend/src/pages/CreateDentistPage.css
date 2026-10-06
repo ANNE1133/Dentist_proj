@@ -1,0 +1,67 @@
+.create-page {
+    max-width: 700px;
+    margin: 50px auto;
+}
+
+.create-page h2 {
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.dentist-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.row {
+    display: flex;
+    gap: 20px;
+}
+
+.field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.field label {
+    margin-bottom: 8px;
+    font-weight: 600;
+}
+
+.field input,
+.field select {
+    padding: 12px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 15px;
+}
+
+.preview {
+    display: flex;
+    justify-content: center;
+}
+
+.preview img {
+    width: 250px;
+    height: 250px;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid #ddd;
+}
+
+button {
+    align-self: center;
+    padding: 12px 40px;
+    border-radius: 8px;
+    border: none;
+    background: #b56a00;
+    color: white;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #965600;
+}
