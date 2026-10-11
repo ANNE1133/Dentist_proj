@@ -25,6 +25,7 @@ const FACE_LANDMARKS_TESSELATION = HolisticLandmarker.FACE_LANDMARKS_TESSELATION
 
 // Adjust if your backend is served from a different host than the frontend.
 const WS_PATH = '/ws/camera/live';
+const TAPO_WEBRTC_URL = import.meta.env.VITE_TAPO_WEBRTC_URL || '';
 
 // Resolution the frame is captured/sent at. Bounding boxes from the backend
 // are in these pixel coordinates, then scaled up to however large the
@@ -104,13 +105,14 @@ function drawBoundingBoxes(
 }
 
 export default function LiveMonitorPage() {
+
   const videoRef = useRef(null);
   const captureCanvasRef = useRef(null); // hidden - used only to encode frames
   const overlayCanvasRef = useRef(null); // visible - draws boxes on top of the video
   const wsRef = useRef(null);
+  const peerConnectionRef = useRef(null);
   const sendTimerRef = useRef(null);
   const reconnectTimerRef = useRef(null);
-  const isUnmountedRef = useRef(false);
   const holisticRef = useRef(null);
   const lastDetectTimeRef = useRef(0);
 
@@ -119,11 +121,22 @@ export default function LiveMonitorPage() {
   const [faces, setFaces] = useState([]);
   const [devices, setDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [cameraSource, setCameraSource] = useState('local');
+  const cameraNameRef = useRef('Local Camera');
 
   const [poseLandmarks, setPoseLandmarks] = useState([]);
+  const poseLandmarksRef = useRef([]);
+  poseLandmarksRef.current = poseLandmarks;
   const [faceLandmarks, setFaceLandmarks] = useState([]);
   const [leftHandLandmarks, setLeftHandLandmarks] = useState([]);
   const [rightHandLandmarks, setRightHandLandmarks] = useState([]);
+
+  useEffect(() => {
+    const selectedDevice = devices.find((device) => device.deviceId === selectedDeviceId);
+    cameraNameRef.current = cameraSource === 'tapo'
+      ? 'Tapo Camera'
+      : selectedDevice?.label || (selectedDeviceId ? 'Local Camera' : 'Default Camera');
+  }, [cameraSource, devices, selectedDeviceId]);
 
   // list available cameras once permission is granted, so "iPhone Camera"
   // (via Continuity Camera) can be picked instead of the Mac's built-in one
@@ -134,6 +147,7 @@ export default function LiveMonitorPage() {
 
     async function loadDevices() {
       try {
+        if (cameraSource !== 'local') return;
         // request permission first so device labels are populated
         if (!permissionRequested) {
           permissionRequested = true;
@@ -169,7 +183,7 @@ export default function LiveMonitorPage() {
       navigator.mediaDevices?.removeEventListener?.("devicechange", loadDevices);
       permissionStream?.getTracks().forEach((track) => track.stop());
     };
-  }, []);
+  }, [cameraSource]);
 
   useEffect(() => {
     async function initHolistic() {
@@ -235,23 +249,94 @@ export default function LiveMonitorPage() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    let sourceFailed = false;
     let stream;
+    let peerConnection;
+
+    const waitForIceGathering = (pc) => new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') {
+        resolve();
+        return;
+      }
+      const onStateChange = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', onStateChange);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', onStateChange);
+    });
+
+    async function connectTapoCamera() {
+      if (!TAPO_WEBRTC_URL) {
+        throw new Error('Set VITE_TAPO_WEBRTC_URL to the MediaMTX WHEP endpoint.');
+      }
+
+      const pc = new RTCPeerConnection();
+      peerConnection = pc;
+      peerConnectionRef.current = pc;
+      const remoteStream = new MediaStream();
+      pc.ontrack = (event) => {
+        if (!active || !videoRef.current) return;
+        remoteStream.addTrack(event.track);
+        videoRef.current.srcObject = remoteStream;
+        videoRef.current.play().catch((err) => console.error('Tapo video playback failed:', err));
+      };
+      pc.onconnectionstatechange = () => {
+        if (!active) return;
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          console.error('Tapo WebRTC connection state:', pc.connectionState);
+          sourceFailed = true;
+          clearInterval(sendTimerRef.current);
+          wsRef.current?.close();
+          setStatus('error');
+        }
+      };
+
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc);
+
+      const response = await fetch(TAPO_WEBRTC_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp', Accept: 'application/sdp' },
+        body: pc.localDescription.sdp,
+      });
+      if (!response.ok) {
+        throw new Error(`MediaMTX WHEP request failed (${response.status})`);
+      }
+      await pc.setRemoteDescription({ type: 'answer', sdp: await response.text() });
+      return pc;
+    }
 
     async function start() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: selectedDeviceId
-            ? { deviceId: { exact: selectedDeviceId }, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT }
-            : { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-          audio: false,
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        setStatus('connecting');
+        if (cameraSource === 'local') {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: selectedDeviceId
+              ? { deviceId: { exact: selectedDeviceId }, width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT }
+              : { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
+            audio: false,
+          });
+          if (!active) {
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+          if (videoRef.current) videoRef.current.srcObject = stream;
+          connectSocket();
+        } else {
+          await connectTapoCamera();
+          if (active) connectSocket();
         }
-        connectSocket();
       } catch (err) {
-        console.error('camera access failed', err);
-        setStatus('error');
+        console.error(`${cameraSource} camera connection failed:`, err);
+        peerConnection?.close();
+        if (peerConnectionRef.current === peerConnection) peerConnectionRef.current = null;
+        if (videoRef.current) videoRef.current.srcObject = null;
+        if (active) setStatus('error');
       }
     }
 
@@ -262,11 +347,16 @@ export default function LiveMonitorPage() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!active) {
+          ws.close();
+          return;
+        }
         setStatus('live');
         sendTimerRef.current = setInterval(sendFrame, SEND_INTERVAL_MS);
       };
 
       ws.onmessage = (event) => {
+        if (!active) return;
         try {
           const data = JSON.parse(event.data);
           if (data.error) {
@@ -281,14 +371,13 @@ export default function LiveMonitorPage() {
         }
       };
 
-      ws.onerror = () => setStatus('error');
+      ws.onerror = () => {
+        if (active) setStatus('error');
+      };
 
       ws.onclose = () => {
         clearInterval(sendTimerRef.current);
-        // FIX: without this guard, a reconnect could still fire ~1.5s after
-        // the component unmounted (or the effect re-ran for a device change),
-        // opening a dangling socket nothing is listening to anymore.
-        if (isUnmountedRef.current) return;
+        if (!active || sourceFailed) return;
         setStatus('idle');
         reconnectTimerRef.current = setTimeout(connectSocket, 1500);
       };
@@ -303,20 +392,27 @@ export default function LiveMonitorPage() {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, CAPTURE_WIDTH, CAPTURE_HEIGHT);
       const imageBase64 = canvas.toDataURL('image/jpeg', 0.7);
-      ws.send(JSON.stringify({ imageBase64 }));
+      const localTrackName = cameraSource === 'local'
+        ? video.srcObject?.getVideoTracks?.()[0]?.label
+        : '';
+      const cameraName = localTrackName || cameraNameRef.current;
+      ws.send(JSON.stringify({ imageBase64, poseLandmarks: poseLandmarksRef.current, cameraName }));
     }
 
-    isUnmountedRef.current = false;
     start();
 
     return () => {
-      isUnmountedRef.current = true;
+      active = false;
       clearInterval(sendTimerRef.current);
       clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
+      wsRef.current = null;
       stream?.getTracks().forEach((t) => t.stop());
+      peerConnection?.close();
+      if (peerConnectionRef.current === peerConnection) peerConnectionRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
     };
-  }, [selectedDeviceId]);
+  }, [cameraSource, selectedDeviceId]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -415,16 +511,26 @@ export default function LiveMonitorPage() {
       </p>
 
       <label style={{ display: 'block', marginBottom: 8 }}>
-        Camera:{' '}
-        <select value={selectedDeviceId} onChange={(e) => setSelectedDeviceId(e.target.value)}>
-          <option value="">Default camera</option>
-          {devices.map((d, index) => (
-            <option key={d.deviceId || `camera-${index}`} value={d.deviceId}>
-              {d.label || `Camera ${index + 1}`}
-            </option>
-          ))}
+        Camera Source:{' '}
+        <select value={cameraSource} onChange={(e) => setCameraSource(e.target.value)}>
+          <option value="local">Local Camera</option>
+          <option value="tapo">Tapo Camera (RTSP)</option>
         </select>
       </label>
+
+      {cameraSource === 'local' && (
+        <label style={{ display: 'block', marginBottom: 8 }}>
+          Camera:{' '}
+          <select value={selectedDeviceId} onChange={(e) => setSelectedDeviceId(e.target.value)}>
+            <option value="">Default camera</option>
+            {devices.map((d, index) => (
+              <option key={d.deviceId || `camera-${index}`} value={d.deviceId}>
+                {d.label || `Camera ${index + 1}`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <div className="live-frame" style={{ position: 'relative', width: CAPTURE_WIDTH, maxWidth: '100%' }}>
         <video

@@ -1,0 +1,14 @@
+logLevel: info
+
+rtspAddress: :8554
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+
+# For remote browsers, set MEDIAMTX_WEBRTC_HOST to the host name/IP that the
+# browser can reach. Local development uses 127.0.0.1.
+webrtcAdditionalHosts:
+  - 127.0.0.1
+
+paths:
+  tapo:
+    source: publisher

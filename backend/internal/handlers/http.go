@@ -31,6 +31,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/camera/logs", h.GetCameraLogs)
 	mux.HandleFunc("POST /api/camera/logs", h.CreateCameraLogs)
+	mux.HandleFunc("POST /api/3dadust", h.Create3DAdjustment)
 	mux.HandleFunc("POST /api/camera/live", h.GetCameraLive) // single-shot fallback / testing
 	mux.HandleFunc("GET /ws/camera/live", h.CameraLiveWS)    // real-time streaming
 }

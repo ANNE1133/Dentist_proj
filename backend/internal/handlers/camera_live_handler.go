@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+
+	"backend/internal/domain"
 )
 
 // GetCameraLive handles POST /api/camera/live.
@@ -12,7 +14,9 @@ import (
 // for the frontend to draw as an overlay.
 func (h *Handler) GetCameraLive(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		ImageBase64 string `json:"imageBase64"`
+		ImageBase64   string                `json:"imageBase64"`
+		PoseLandmarks []domain.PoseLandmark `json:"poseLandmarks"`
+		CameraName    string                `json:"cameraName"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -23,7 +27,7 @@ func (h *Handler) GetCameraLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	faces, err := h.service.DetectFaces(payload.ImageBase64)
+	faces, err := h.service.DetectFacesWithPoseAndCamera(payload.ImageBase64, payload.PoseLandmarks, payload.CameraName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

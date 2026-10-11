@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -113,7 +114,7 @@ func (db *DB) ListDentistsForMatching() ([]domain.Dentist, error) {
 // CreateDentist inserts a new row into dentists. Used both by the legacy
 // base64 upload path (CreateDentistRecord) and the new MinIO + face
 // embedding flow (RegisterDentistWithImage) — the latter only fills
-// DentistName + ImagePath, leaving DentistSex/BodyCompositionData empty,
+// DentistName + ImagePath, leaving optional profile fields empty,
 // so those columns need to allow NULL/default.
 func (db *DB) CreateDentist(d domain.Dentist) (domain.Dentist, error) {
 	const q = `
@@ -197,11 +198,11 @@ func (db *DB) CreateFaceEmbedding(ctx context.Context, e domain.FaceEmbedding) e
 
 func (db *DB) CreateAdjustItem(a domain.AdjustableItem) (domain.AdjustableItem, error) {
 	const q = `
-		INSERT INTO adjustable_items (adjust_item_id, adjust_name, data_used)
-		VALUES ($1, $2, $3)
+		INSERT INTO adjustable_items (adjust_item_id, adjust_name, data_used, dentist_adjust, patient_adjust)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING adjust_item_id, created_at`
 
-	err := db.QueryRow(q, a.AdjustItemID, a.AdjustName, a.DataUsed).Scan(&a.AdjustItemID, &a.CreatedAt)
+	err := db.QueryRow(q, a.AdjustItemID, a.AdjustName, a.DataUsed, a.DentistAdjust, a.PatientAdjust).Scan(&a.AdjustItemID, &a.CreatedAt)
 	if err != nil {
 		return domain.AdjustableItem{}, fmt.Errorf("insert adjust item: %w", err)
 	}
@@ -210,12 +211,12 @@ func (db *DB) CreateAdjustItem(a domain.AdjustableItem) (domain.AdjustableItem, 
 
 func (db *DB) GetAdjustItemByID(id int) (domain.AdjustableItem, error) {
 	const q = `
-		SELECT adjust_item_id, adjust_name, data_used, created_at
+		SELECT adjust_item_id, adjust_name, data_used, dentist_adjust, patient_adjust, created_at
 		FROM adjustable_items
 		WHERE adjust_item_id = $1`
 
 	var a domain.AdjustableItem
-	err := db.QueryRow(q, id).Scan(&a.AdjustItemID, &a.AdjustName, &a.DataUsed, &a.CreatedAt)
+	err := db.QueryRow(q, id).Scan(&a.AdjustItemID, &a.AdjustName, &a.DataUsed, &a.DentistAdjust, &a.PatientAdjust, &a.CreatedAt)
 	if err != nil {
 		return domain.AdjustableItem{}, fmt.Errorf("get adjust item %d: %w", id, err)
 	}
@@ -224,7 +225,7 @@ func (db *DB) GetAdjustItemByID(id int) (domain.AdjustableItem, error) {
 
 func (db *DB) ListAdjustItems() ([]domain.AdjustableItem, error) {
 	const q = `
-		SELECT adjust_item_id, adjust_name, data_used, created_at
+		SELECT adjust_item_id, adjust_name, data_used, dentist_adjust, patient_adjust, created_at
 		FROM adjustable_items
 		ORDER BY adjust_item_id DESC`
 
@@ -237,7 +238,7 @@ func (db *DB) ListAdjustItems() ([]domain.AdjustableItem, error) {
 	var out []domain.AdjustableItem
 	for rows.Next() {
 		var a domain.AdjustableItem
-		if err := rows.Scan(&a.AdjustItemID, &a.AdjustName, &a.DataUsed, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.AdjustItemID, &a.AdjustName, &a.DataUsed, &a.DentistAdjust, &a.PatientAdjust, &a.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan adjust item: %w", err)
 		}
 		out = append(out, a)
@@ -248,13 +249,21 @@ func (db *DB) ListAdjustItems() ([]domain.AdjustableItem, error) {
 // ---------- Camera History Logs ----------
 
 func (db *DB) CreateCameraLog(l domain.CameraLogs) (domain.CameraLogs, error) {
+	var measurements any
+	if l.BodyMeasurements != nil {
+		encoded, err := json.Marshal(l.BodyMeasurements)
+		if err != nil {
+			return domain.CameraLogs{}, fmt.Errorf("encode body measurements: %w", err)
+		}
+		measurements = string(encoded)
+	}
 	const q = `
-		INSERT INTO camera_logs (dentist_id, body_composition, adjustment_items, adjustment_status)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO camera_history_logs (camera_name, dentist_id, body_measurements, adjustment_items, adjustment_status)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at`
 
 	err := db.QueryRow(q,
-		l.DentistID, l.BodyComposition, pq.Array(l.AdjustmentItems), l.AdjustmentStatus,
+		l.CameraName, l.DentistID, measurements, pq.Array(l.AdjustmentItems), l.AdjustmentStatus,
 	).Scan(&l.ID, &l.CreatedAt)
 	if err != nil {
 		return domain.CameraLogs{}, fmt.Errorf("insert camera log: %w", err)
@@ -262,11 +271,29 @@ func (db *DB) CreateCameraLog(l domain.CameraLogs) (domain.CameraLogs, error) {
 	return l, nil
 }
 
+func (db *DB) Create3DAdjustment(a domain.Adjustment3D) error {
+	payload, err := json.Marshal(struct {
+		Data            json.RawMessage           `json:"data,omitempty"`
+		AdjustmentItems []domain.Adjustment3DItem `json:"adjustmentItems,omitempty"`
+	}{AdjustmentItems: a.AdjustmentItems})
+	if err != nil {
+		return fmt.Errorf("encode 3d adjustment: %w", err)
+	}
+	_, err = db.Exec(`INSERT INTO mock3d (history_log_id, payload, status) VALUES ($1, $2::jsonb, $3)`, a.HistoryLogID, string(payload), a.Status)
+	if err != nil {
+		return fmt.Errorf("insert 3d adjustment: %w", err)
+	}
+	return nil
+}
+
 func (db *DB) ListCameraLogs() ([]domain.CameraLogs, error) {
 	const q = `
-		SELECT id, dentist_id, body_composition, adjustment_items, adjustment_status, created_at
-		FROM camera_logs
-		ORDER BY created_at DESC`
+		SELECT l.id, l.camera_name, l.dentist_id, l.body_measurements, l.adjustment_items,
+			CASE WHEN l.body_measurements IS NULL OR l.body_measurements = '[]'::jsonb OR COALESCE(cardinality(l.adjustment_items), 0) = 0 THEN 'not_applicable'
+			WHEN COALESCE((SELECT m.status FROM mock3d m WHERE m.history_log_id = l.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), FALSE) THEN 'success' ELSE 'pending' END,
+			l.created_at
+		FROM camera_history_logs l
+		ORDER BY l.created_at DESC`
 
 	rows, err := db.Query(q)
 	if err != nil {
@@ -277,12 +304,61 @@ func (db *DB) ListCameraLogs() ([]domain.CameraLogs, error) {
 	var out []domain.CameraLogs
 	for rows.Next() {
 		var l domain.CameraLogs
-		if err := rows.Scan(
-			&l.ID, &l.DentistID, &l.BodyComposition, pq.Array(&l.AdjustmentItems), &l.AdjustmentStatus, &l.CreatedAt,
-		); err != nil {
+		var raw []byte
+		if err := rows.Scan(&l.ID, &l.CameraName, &l.DentistID, &raw, pq.Array(&l.AdjustmentItems), &l.AdjustmentStatus, &l.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan cameraa log: %w", err)
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &l.BodyMeasurements); err != nil {
+				return nil, fmt.Errorf("decode body measurements: %w", err)
+			}
 		}
 		out = append(out, l)
 	}
 	return out, rows.Err()
+}
+
+func (db *DB) ListCameraLogsPage(page, limit int, start, end *time.Time) (domain.CameraLogsPage, error) {
+	if page < 1 || limit < 1 || limit > 100 {
+		return domain.CameraLogsPage{}, fmt.Errorf("invalid pagination")
+	}
+	const filter = ` FROM camera_history_logs WHERE ($1::timestamptz IS NULL OR created_at >= $1) AND ($2::timestamptz IS NULL OR created_at <= $2)`
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*)`+filter, start, end).Scan(&total); err != nil {
+		return domain.CameraLogsPage{}, fmt.Errorf("count camera history logs: %w", err)
+	}
+	rows, err := db.Query(`SELECT l.id, l.camera_name, l.dentist_id, l.body_measurements, l.adjustment_items,
+		CASE WHEN l.body_measurements IS NULL OR l.body_measurements = '[]'::jsonb OR COALESCE(cardinality(l.adjustment_items), 0) = 0 THEN 'not_applicable'
+		WHEN COALESCE((SELECT m.status FROM mock3d m WHERE m.history_log_id = l.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), FALSE) THEN 'success' ELSE 'pending' END,
+		l.created_at FROM camera_history_logs l WHERE ($1::timestamptz IS NULL OR l.created_at >= $1) AND ($2::timestamptz IS NULL OR l.created_at <= $2) ORDER BY l.created_at DESC, l.id DESC LIMIT $3 OFFSET $4`, start, end, limit, (page-1)*limit)
+	if err != nil {
+		return domain.CameraLogsPage{}, fmt.Errorf("list camera history logs: %w", err)
+	}
+	defer rows.Close()
+	data := make([]domain.CameraLogs, 0)
+	for rows.Next() {
+		var l domain.CameraLogs
+		var created time.Time
+		var items pq.StringArray
+		var raw []byte
+		if err := rows.Scan(&l.ID, &l.CameraName, &l.DentistID, &raw, &items, &l.AdjustmentStatus, &created); err != nil {
+			return domain.CameraLogsPage{}, fmt.Errorf("scan camera history log: %w", err)
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &l.BodyMeasurements); err != nil {
+				return domain.CameraLogsPage{}, fmt.Errorf("decode body measurements: %w", err)
+			}
+		}
+		l.AdjustmentItems = []string(items)
+		l.CreatedAt = created.Format(time.RFC3339)
+		data = append(data, l)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.CameraLogsPage{}, err
+	}
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + limit - 1) / limit
+	}
+	return domain.CameraLogsPage{Data: data, Page: page, Limit: limit, Total: total, TotalPages: totalPages}, nil
 }

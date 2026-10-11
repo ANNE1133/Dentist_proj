@@ -1,4 +1,18 @@
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.21.1
+    container_name: dentist-mediamtx
+    environment:
+      MTX_PATHS_TAPO_SOURCE: ${TAPO_RTSP_URL:-publisher}
+      MTX_WEBRTCADDITIONALHOSTS: ${MEDIAMTX_WEBRTC_HOST:-127.0.0.1}
+    ports:
+      - "8554:8554/tcp" # RTSP
+      - "8889:8889/tcp" # WebRTC HTTP/WHEP
+      - "8189:8189/udp" # WebRTC media
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    restart: unless-stopped
+
   minio:
     image: minio/minio:RELEASE.2025-04-08T15-41-24Z
     container_name: dentist-minio
@@ -87,6 +101,7 @@ services:
       - backend
     environment:
       VITE_API_PROXY_TARGET: http://backend:8080
+      VITE_TAPO_WEBRTC_URL: ${VITE_TAPO_WEBRTC_URL:-http://localhost:8889/tapo/whep}
     ports:
       - "5173:5173"
 

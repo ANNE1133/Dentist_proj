@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 
+	"backend/internal/domain"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -18,13 +20,21 @@ var upgrader = websocket.Upgrader{
 }
 
 type liveFrameMessage struct {
-	ImageBase64 string `json:"imageBase64"`
+	ImageBase64   string                `json:"imageBase64"`
+	PoseLandmarks []domain.PoseLandmark `json:"poseLandmarks"`
+	CameraName    string                `json:"cameraName"`
+}
+
+type liveFrame struct {
+	imageBase64   string
+	poseLandmarks []domain.PoseLandmark
+	cameraName    string
 }
 
 // CameraLiveWS handles GET /ws/camera/live.
 // The iPhone opens ONE WebSocket connection and streams frames continuously
-// as {"imageBase64": "..."} JSON messages. Each frame gets a detection
-// response back over the same connection: {"faces": [...]}.
+// as {"imageBase64": "...", "poseLandmarks": [...]} JSON messages. Each
+// frame gets a detection response back over the same connection: {"faces": [...]}.
 //
 // If frames arrive faster than the python service can process them, older
 // pending frames are dropped in favor of the newest one - this keeps the
@@ -37,7 +47,7 @@ func (h *Handler) CameraLiveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	frames := make(chan string, 1)
+	frames := make(chan liveFrame, 1)
 	done := make(chan struct{})
 
 	// reader: pulls frames off the socket, always keeping only the latest one
@@ -54,15 +64,16 @@ func (h *Handler) CameraLiveWS(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			frame := liveFrame{imageBase64: msg.ImageBase64, poseLandmarks: msg.PoseLandmarks, cameraName: msg.CameraName}
 			select {
-			case frames <- msg.ImageBase64:
+			case frames <- frame:
 			default:
 				// processor is still busy - replace the pending frame with the newest
 				select {
 				case <-frames:
 				default:
 				}
-				frames <- msg.ImageBase64
+				frames <- frame
 			}
 		}
 	}()
@@ -72,8 +83,8 @@ func (h *Handler) CameraLiveWS(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-done:
 			return
-		case imageBase64 := <-frames:
-			faces, err := h.service.DetectFaces(imageBase64)
+		case frame := <-frames:
+			faces, err := h.service.DetectFacesWithPoseAndCamera(frame.imageBase64, frame.poseLandmarks, frame.cameraName)
 			if err != nil {
 				_ = conn.WriteJSON(map[string]string{"error": err.Error()})
 				continue

@@ -34,17 +34,50 @@ func RunMigrations(db *DB) error {
 			adjust_item_id   SERIAL PRIMARY KEY,
 			adjust_name      TEXT NOT NULL,
 			data_used        TEXT,
+			dentist_adjust   BOOLEAN NOT NULL DEFAULT FALSE,
+			patient_adjust   BOOLEAN NOT NULL DEFAULT FALSE,
 			created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE adjustable_items ADD COLUMN IF NOT EXISTS dentist_adjust BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE adjustable_items ADD COLUMN IF NOT EXISTS patient_adjust BOOLEAN NOT NULL DEFAULT FALSE`,
+		`INSERT INTO adjustable_items (adjust_item_id, adjust_name, data_used, dentist_adjust, patient_adjust)
+		 VALUES (1, 'dentistchair', 'Adjust for a recognized dentist', TRUE, FALSE),
+		        (2, 'clientchair', 'Adjust for a patient', FALSE, TRUE)
+		 ON CONFLICT (adjust_item_id) DO UPDATE
+		 SET adjust_name = EXCLUDED.adjust_name, data_used = EXCLUDED.data_used,
+		     dentist_adjust = EXCLUDED.dentist_adjust, patient_adjust = EXCLUDED.patient_adjust`,
+		`DO $$ BEGIN
+		 IF pg_get_serial_sequence('adjustable_items', 'adjust_item_id') IS NOT NULL THEN
+		   EXECUTE 'SELECT setval(pg_get_serial_sequence(''adjustable_items'', ''adjust_item_id''), GREATEST(COALESCE((SELECT MAX(adjust_item_id) FROM adjustable_items), 1), 1))';
+		 END IF;
+		 END $$`,
 
-		`CREATE TABLE IF NOT EXISTS camera_logs (
+		`CREATE TABLE IF NOT EXISTS camera_history_logs (
 			id                  SERIAL PRIMARY KEY,
+			camera_name         TEXT NOT NULL DEFAULT 'Unknown Camera',
 			dentist_id          TEXT NOT NULL,
-			body_composition    TEXT,
+			body_measurements   JSONB,
 			adjustment_items    TEXT[],
 			adjustment_status   TEXT,
 			created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE camera_history_logs ADD COLUMN IF NOT EXISTS camera_name TEXT NOT NULL DEFAULT 'Unknown Camera'`,
+		`ALTER TABLE camera_history_logs ADD COLUMN IF NOT EXISTS body_measurements JSONB`,
+		`CREATE INDEX IF NOT EXISTS idx_camera_history_logs_created_at ON camera_history_logs(created_at)`,
+		`CREATE TABLE IF NOT EXISTS mock3d (
+			id SERIAL PRIMARY KEY,
+			history_log_id INTEGER NOT NULL REFERENCES camera_history_logs(id) ON DELETE CASCADE,
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			status BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mock3d' AND column_name = 'camera_log_id')
+				AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'mock3d' AND column_name = 'history_log_id') THEN
+				ALTER TABLE mock3d RENAME COLUMN camera_log_id TO history_log_id;
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_mock3d_history_log_id ON mock3d(history_log_id, created_at DESC)`,
 	}
 
 	for i, stmt := range statements {
