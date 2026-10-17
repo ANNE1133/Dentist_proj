@@ -10,14 +10,28 @@ This workspace now contains a simple full-stack MVP inspired by the project summ
 
 ## Run locally
 
-### 1. Backend
+### 1. Configure login
+
+The backend uses one operator account configured with environment variables. Set
+both values before starting the backend or Docker Compose:
+
+```bash
+export LOGIN_USERNAME=clinic-admin
+export LOGIN_PASSWORD='choose-a-strong-password'
+```
+
+Without these values, the login endpoint remains unavailable. Successful logins
+create an HTTP-only session cookie that expires after 12 hours; application API
+routes require that session.
+
+### 2. Backend
 ```bash
 cd backend
 go mod tidy
 go run .
 ```
 
-### 2. Frontend
+### 3. Frontend
 ```bash
 cd frontend
 npm install

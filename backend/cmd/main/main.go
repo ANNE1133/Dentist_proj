@@ -48,7 +48,8 @@ func main() {
 	embedder := service.NewHTTPFaceEmbeddingExtractor(cfg.PythonServiceURL + "/embed")
 
 	svc := service.New(db, pyClient, minioSvc, embedder)
-	h := handlers.NewHandler(svc)
+	auth := service.NewAuthService(cfg.LoginUsername, cfg.LoginPassword)
+	h := handlers.NewHandler(svc, auth)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)

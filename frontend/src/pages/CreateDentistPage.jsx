@@ -55,6 +55,7 @@ export default function CreateDentistPage() {
 
       const res = await fetch(`${API_BASE}/dentist`, {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 

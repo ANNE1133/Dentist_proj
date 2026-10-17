@@ -43,7 +43,9 @@ export default function CameraHistoryLogPage() {
         params.set('endTime', new Date(endTime).toISOString());
       }
 
-      const res = await fetch(`${API_BASE}/camera/logs?${params}`);
+      const res = await fetch(`${API_BASE}/camera/logs?${params}`, {
+        credentials: 'include',
+      });
 
       const responseText = await res.text();
 
@@ -83,7 +85,9 @@ export default function CameraHistoryLogPage() {
     setError('');
 
     try {
-      const itemsRes = await fetch(`${API_BASE}/adjustitem`);
+      const itemsRes = await fetch(`${API_BASE}/adjustitem`, {
+        credentials: 'include',
+      });
       const itemsText = await itemsRes.text();
       let adjustableItems;
       try {
@@ -110,6 +114,7 @@ export default function CameraHistoryLogPage() {
 
       const res = await fetch(`${API_BASE}/3dadust`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           historyLogId: entry.id,

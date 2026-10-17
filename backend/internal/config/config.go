@@ -12,6 +12,8 @@ type Config struct {
 	DBPassword       string
 	DBName           string
 	PythonServiceURL string
+	LoginUsername    string
+	LoginPassword    string
 }
 
 func Load() Config {
@@ -22,6 +24,8 @@ func Load() Config {
 		DBPassword:       getEnv("DB_PASSWORD", "dentistpass"),
 		DBName:           getEnv("DB_NAME", "dentistchair"),
 		PythonServiceURL: getEnv("PYTHON_SERVICE_URL", "http://host.docker.internal:8000"),
+		LoginUsername:    os.Getenv("LOGIN_USERNAME"),
+		LoginPassword:    os.Getenv("LOGIN_PASSWORD"),
 	}
 }
 
